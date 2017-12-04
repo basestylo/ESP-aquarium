@@ -32,13 +32,14 @@ DeviceAddress boardTempDevice = { 0x28, 0xFF, 0x91, 0x51, 0xC1, 0x16, 0x04, 0xBA
 float tempAqua=0;
 float tempBoard=0;
  
+const int ledStatusPin = D8;
 const int lightPin = D0;
 const int pumpPin = D5;
 const int heatherPin = D6;
 boolean lightStatus = true;
 boolean pumpStatus = true;
 boolean heatherStatus = true;
-
+boolean ledStatus = true;
 void setup()
 { 
   //Serial port
@@ -79,6 +80,7 @@ void setup()
   pinMode(lightPin, OUTPUT);
   pinMode(pumpPin, OUTPUT);
   pinMode(heatherPin, OUTPUT);
+  pinMode(ledStatusPin, OUTPUT);
   setRelayStates();
   
   //Start routine
@@ -99,12 +101,21 @@ void loop() {
   setHeatherStatus();
   printRelayStatus();
   setRelayStates();
+  updateDateIfRequired();
 }
 
 void setRelayStates() {
   digitalWrite(lightPin, lightStatus);
   digitalWrite(pumpPin, pumpStatus);
   digitalWrite(heatherPin, heatherStatus);
+  ledStatus? analogWrite(ledStatusPin, 0):analogWrite(ledStatusPin, 200);
+  ledStatus = !ledStatus;
+}
+
+void updateDateIfRequired() {
+    if(now.hour() == 0 && now.minute() == 0){
+      obtainDate();
+    }
 }
 
 void setLightStatus() {
@@ -181,6 +192,8 @@ void printWifiInfo() {
 
 void obtainDate() {
     //get a random server from the pool
+  oled.setTextXY(6,0);              // Set cursor position, start of line 0
+  oled.putString("Updating date.");
   WiFi.hostByName(ntpServerName, timeServerIP); 
 
   sendNTPpacket(timeServerIP); // send an NTP packet to a time server
@@ -189,6 +202,7 @@ void obtainDate() {
   
   int cb = udp.parsePacket();
   while (!cb) {
+    oled.putString(".");
     Serial.println("no packet yet");
     sendNTPpacket(timeServerIP); // send an NTP packet to a time server
     delay(10000);
@@ -244,6 +258,9 @@ void obtainDate() {
     Serial.print(':');
     Serial.print(now.second(), DEC);
     Serial.println();
+    
+    oled.setTextXY(6,0);              // Set cursor position, start of line 0
+    oled.putString("                ");
 }
 
 void printDate() {
@@ -257,6 +274,6 @@ void printDate() {
   oled.putNumber(now.hour());
   oled.putString(":");
   oled.putNumber(now.minute());
-  oled.putString(" ");
+  oled.putString("  ");
 }
 
