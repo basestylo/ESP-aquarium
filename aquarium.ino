@@ -257,5 +257,6 @@ void printDate() {
   oled.putNumber(now.hour());
   oled.putString(":");
   oled.putNumber(now.minute());
+  oled.putString(" ");
 }
 
