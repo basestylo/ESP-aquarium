@@ -15,6 +15,8 @@
 #define ONE_WIRE_BUS D1
 #define TEMPERATURE_PRECISION 12 
 #define TZ 0
+#define MAX_AQUA_TEMP 22
+#define RELAY_DEBOUNCE_SECS 300
 
 RTC_Millis RTC;                           // RTC (soft)
 DateTime now;                             // current time
@@ -29,8 +31,9 @@ OneWire oneWire(ONE_WIRE_BUS);
 DallasTemperature sensors(&oneWire);
 DeviceAddress aquaTempDevice  = { 0x28, 0xFF, 0x45, 0xBC, 0xB5, 0x16, 0x03, 0xDD };
 DeviceAddress boardTempDevice = { 0x28, 0xFF, 0x91, 0x51, 0xC1, 0x16, 0x04, 0xBA };
-float tempAqua=0;
-float tempBoard=0;
+float tempAqua = 0;
+int lastStateChangeHeather = 0;
+float tempBoard = 0;
  
 const int ledStatusPin = D8;
 const int lightPin = D0;
@@ -107,7 +110,10 @@ void loop() {
 void setRelayStates() {
   digitalWrite(lightPin, lightStatus);
   digitalWrite(pumpPin, pumpStatus);
-  digitalWrite(heatherPin, heatherStatus);
+  if((lastStateChangeHeather + RELAY_DEBOUNCE_SECS) < now.unixtime() && digitalRead(heatherPin) != heatherStatus){
+    digitalWrite(heatherPin, heatherStatus);
+    lastStateChangeHeather = now.unixtime()
+  }
   ledStatus? analogWrite(ledStatusPin, 0):analogWrite(ledStatusPin, 200);
   ledStatus = !ledStatus;
 }
@@ -123,7 +129,7 @@ void setLightStatus() {
 }
 
 void setHeatherStatus() {
-  heatherStatus = tempAqua < 24;
+  heatherStatus = tempAqua < MAX_AQUA_TEMP;
 }
 
 unsigned long sendNTPpacket(IPAddress& address)
