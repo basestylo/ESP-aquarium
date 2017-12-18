@@ -16,8 +16,10 @@
 #define TEMPERATURE_PRECISION 12 
 #define TZ 0
 #define MAX_AQUA_TEMP 22
-#define RELAY_DEBOUNCE_SECS 300
+#define RELAY_DEBOUNCE_SECS 1200
+#define LIGHT_ON 16
 
+// RTC
 RTC_Millis RTC;                           // RTC (soft)
 DateTime now;                             // current time
 unsigned int localPort = 2390;      // local port to listen for UDP packets
@@ -27,22 +29,29 @@ const int NTP_PACKET_SIZE = 48;
 byte packetBuffer[ NTP_PACKET_SIZE];
 WiFiUDP udp;
 
+//Temperature sensors
 OneWire oneWire(ONE_WIRE_BUS);
 DallasTemperature sensors(&oneWire);
 DeviceAddress aquaTempDevice  = { 0x28, 0xFF, 0x45, 0xBC, 0xB5, 0x16, 0x03, 0xDD };
 DeviceAddress boardTempDevice = { 0x28, 0xFF, 0x91, 0x51, 0xC1, 0x16, 0x04, 0xBA };
 float tempAqua = 0;
-int lastStateChangeHeather = 0;
 float tempBoard = 0;
- 
+
+//Debounce
+int lastStateChangeHeather = 0;
+
+//Relays
 const int ledStatusPin = D8;
 const int lightPin = D0;
 const int pumpPin = D5;
 const int heatherPin = D6;
 boolean lightStatus = true;
 boolean pumpStatus = true;
-boolean heatherStatus = true;
+boolean heatherStatus = false;
 boolean ledStatus = true;
+boolean isLightRelayInverted = true;
+boolean isHeatherRelayInverted = true;
+
 void setup()
 { 
   //Serial port
@@ -107,12 +116,26 @@ void loop() {
   updateDateIfRequired();
 }
 
+boolean xor_operation(boolean a, boolean b){
+  return ((!a&&b)||(a&&!b));
+}
+
+
+boolean is_out_of_debounce_time(int lastChangeTimestamp){
+  return (lastChangeTimestamp + RELAY_DEBOUNCE_SECS) < now.unixtime();
+}
+
+boolean pin_state_changed(int pin, boolean expected_status){
+  return digitalRead(pin) != expected_status;
+}
+
 void setRelayStates() {
-  digitalWrite(lightPin, lightStatus);
+  // TODO define IS_LIGHT_INVERTED and work with this.
+  digitalWrite(lightPin, xor_operation(lightStatus, isLightRelayInverted)); // relay light is inverted - using XOR operation
   digitalWrite(pumpPin, pumpStatus);
-  if((lastStateChangeHeather + RELAY_DEBOUNCE_SECS) < now.unixtime() && digitalRead(heatherPin) != heatherStatus){
-    digitalWrite(heatherPin, heatherStatus);
-    lastStateChangeHeather = now.unixtime()
+  if(is_out_of_debounce_time(lastStateChangeHeather) && pin_state_change(heatherPin, heatherStatus)){
+    digitalWrite(heatherPin, xor_operation(heatherStatus, isHeatherRelayInverted));
+    lastStateChangeHeather = now.unixtime();
   }
   ledStatus? analogWrite(ledStatusPin, 0):analogWrite(ledStatusPin, 200);
   ledStatus = !ledStatus;
@@ -125,7 +148,7 @@ void updateDateIfRequired() {
 }
 
 void setLightStatus() {
-  lightStatus = now.hour() >= 16;
+  lightStatus = LIGHT_ON >= now.hour();
 }
 
 void setHeatherStatus() {
@@ -169,9 +192,9 @@ void printRelayStatus() {
   oled.setTextXY(4,1);              // Set cursor position, start of line 0
   oled.putString("HEAT LUX  PUMP");
   oled.setTextXY(5,1);              // Set cursor position, start of line 0
-  (heatherStatus)? oled.putString("ON   "):oled.putString("OFF  ");
-  (lightStatus)? oled.putString("ON   "):oled.putString("OFF  ");
-  (pumpStatus)? oled.putString("ON   "):oled.putString("OFF  ");
+  (digitalRead(heatherPin))? oled.putString("ON   "):oled.putString("OFF  ");
+  (digitalRead(lightStatus))? oled.putString("ON   "):oled.putString("OFF  ");
+  (digitalRead(pumpStatus))? oled.putString("ON   "):oled.putString("OFF  ");
 }
 
 
