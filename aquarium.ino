@@ -16,42 +16,33 @@
 #define TEMPERATURE_PRECISION 12 
 #define TZ 0
 #define MAX_AQUA_TEMP 22
-#define RELAY_DEBOUNCE_SECS 1200
-#define LIGHT_ON 16
+#define RELAY_DEBOUNCE_SECS 300
 
-// RTC
 RTC_Millis RTC;                           // RTC (soft)
 DateTime now;                             // current time
 unsigned int localPort = 2390;      // local port to listen for UDP packets
 IPAddress timeServerIP; // time.nist.gov NTP server address
-const char* ntpServerName = "time.nist.gov";
+const char* ntpServerName = "0.es.pool.ntp.org";
 const int NTP_PACKET_SIZE = 48;
 byte packetBuffer[ NTP_PACKET_SIZE];
 WiFiUDP udp;
 
-//Temperature sensors
 OneWire oneWire(ONE_WIRE_BUS);
 DallasTemperature sensors(&oneWire);
 DeviceAddress aquaTempDevice  = { 0x28, 0xFF, 0x45, 0xBC, 0xB5, 0x16, 0x03, 0xDD };
 DeviceAddress boardTempDevice = { 0x28, 0xFF, 0x91, 0x51, 0xC1, 0x16, 0x04, 0xBA };
 float tempAqua = 0;
-float tempBoard = 0;
-
-//Debounce
 int lastStateChangeHeather = 0;
-
-//Relays
+float tempBoard = 0;
+ 
 const int ledStatusPin = D8;
 const int lightPin = D0;
 const int pumpPin = D5;
 const int heatherPin = D6;
-boolean lightStatus = true;
+boolean lightStatus = false;
 boolean pumpStatus = true;
-boolean heatherStatus = false;
+boolean heatherStatus = true;
 boolean ledStatus = true;
-boolean isLightRelayInverted = true;
-boolean isHeatherRelayInverted = true;
-
 void setup()
 { 
   //Serial port
@@ -74,7 +65,7 @@ void setup()
     delay(3000);
     ESP.reset();
   }
-
+ 
   //NTP
   RTC.begin(DateTime(F(__DATE__), F(__TIME__)));    // initially set to compile date & time
   udp.begin(localPort);
@@ -93,6 +84,8 @@ void setup()
   pinMode(pumpPin, OUTPUT);
   pinMode(heatherPin, OUTPUT);
   pinMode(ledStatusPin, OUTPUT);
+
+  obtainTemperature();
   setRelayStates();
   
   //Start routine
@@ -116,25 +109,11 @@ void loop() {
   updateDateIfRequired();
 }
 
-boolean xor_operation(boolean a, boolean b){
-  return ((!a&&b)||(a&&!b));
-}
-
-
-boolean is_out_of_debounce_time(int lastChangeTimestamp){
-  return (lastChangeTimestamp + RELAY_DEBOUNCE_SECS) < now.unixtime();
-}
-
-boolean pin_state_changed(int pin, boolean expected_status){
-  return digitalRead(pin) != expected_status;
-}
-
 void setRelayStates() {
-  // TODO define IS_LIGHT_INVERTED and work with this.
-  digitalWrite(lightPin, xor_operation(lightStatus, isLightRelayInverted)); // relay light is inverted - using XOR operation
+  digitalWrite(lightPin, lightStatus);
   digitalWrite(pumpPin, pumpStatus);
-  if(is_out_of_debounce_time(lastStateChangeHeather) && pin_state_change(heatherPin, heatherStatus)){
-    digitalWrite(heatherPin, xor_operation(heatherStatus, isHeatherRelayInverted));
+  if((lastStateChangeHeather + RELAY_DEBOUNCE_SECS) < now.unixtime() && digitalRead(heatherPin) != heatherStatus){
+    digitalWrite(heatherPin, heatherStatus);
     lastStateChangeHeather = now.unixtime();
   }
   ledStatus? analogWrite(ledStatusPin, 0):analogWrite(ledStatusPin, 200);
@@ -148,7 +127,7 @@ void updateDateIfRequired() {
 }
 
 void setLightStatus() {
-  lightStatus = LIGHT_ON >= now.hour();
+  lightStatus = now.hour() >= 16;
 }
 
 void setHeatherStatus() {
@@ -192,9 +171,9 @@ void printRelayStatus() {
   oled.setTextXY(4,1);              // Set cursor position, start of line 0
   oled.putString("HEAT LUX  PUMP");
   oled.setTextXY(5,1);              // Set cursor position, start of line 0
-  (digitalRead(heatherPin))? oled.putString("ON   "):oled.putString("OFF  ");
-  (digitalRead(lightStatus))? oled.putString("ON   "):oled.putString("OFF  ");
-  (digitalRead(pumpStatus))? oled.putString("ON   "):oled.putString("OFF  ");
+  (heatherStatus)? oled.putString("ON   "):oled.putString("OFF  ");
+  (lightStatus)? oled.putString("ON   "):oled.putString("OFF  ");
+  (pumpStatus)? oled.putString("ON   "):oled.putString("OFF  ");
 }
 
 
@@ -230,8 +209,10 @@ void obtainDate() {
   delay(10000);
   
   int cb = udp.parsePacket();
+  int counter = 0;
   while (!cb) {
-    oled.putString(".");
+    oled.setTextXY(7,0);
+    oled.putNumber(++counter);
     Serial.println("no packet yet");
     sendNTPpacket(timeServerIP); // send an NTP packet to a time server
     delay(10000);
@@ -265,7 +246,7 @@ void obtainDate() {
 
     int tz;                                            // adjust for EST time zone
     DateTime gt(epoch - (TZ*60*60));                       // obtain date & time based on NTP-derived epoch...
-    tz = IsDST(gt.month(), gt.day(), gt.dayOfTheWeek())? TZ:TZ+1;  // if in DST correct for GMT-4 hours else GMT-5
+    tz = IsDST(gt.month(), gt.day(), gt.dayOfTheWeek())? TZ+2:TZ+1;  // if in DST correct for GMT-4 hours else GMT-5
     DateTime ntime(epoch + (tz*60*60));                    // if in DST correct for GMT-4 hours else GMT-5
     Serial.println("EPOCH:");
     Serial.println(epoch);
@@ -299,9 +280,16 @@ void printDate() {
   oled.putNumber(now.month());
   oled.putString("/");
   oled.putNumber(now.year());
+  
   oled.setTextXY(7,11);              // Set cursor position, start of line 0
+  if(now.hour() < 10){
+    oled.putString("0");
+  }
   oled.putNumber(now.hour());
   oled.putString(":");
+  if(now.minute() < 10){
+    oled.putString("0");
+  }
   oled.putNumber(now.minute());
   oled.putString("  ");
 }
