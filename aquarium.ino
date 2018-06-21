@@ -16,6 +16,7 @@
 #define TEMPERATURE_PRECISION 12 
 #define TZ 0
 #define MAX_AQUA_TEMP 22
+#define FORCED_AQUA_COOLING_TEMP 24
 #define RELAY_DEBOUNCE_SECS 300
 
 RTC_Millis RTC;                           // RTC (soft)
@@ -39,10 +40,13 @@ const int ledStatusPin = D8;
 const int lightPin = D0;
 const int pumpPin = D5;
 const int heatherPin = D6;
+const int fanPin = D7;
 boolean lightStatus = false;
 boolean pumpStatus = true;
 boolean heatherStatus = true;
+boolean fanStatus = true;
 boolean ledStatus = true;
+
 void setup()
 { 
   //Serial port
@@ -83,6 +87,7 @@ void setup()
   pinMode(lightPin, OUTPUT);
   pinMode(pumpPin, OUTPUT);
   pinMode(heatherPin, OUTPUT);
+  pinMode(fanPin, OUTPUT);
   pinMode(ledStatusPin, OUTPUT);
 
   obtainTemperature();
@@ -104,6 +109,7 @@ void loop() {
   printDate();
   setLightStatus();
   setHeatherStatus();
+  setFanStatus();
   printRelayStatus();
   setRelayStates();
   updateDateIfRequired();
@@ -111,6 +117,7 @@ void loop() {
 
 void setRelayStates() {
   digitalWrite(lightPin, lightStatus);
+  digitalWrite(fanPin, !fanStatus);
   digitalWrite(pumpPin, pumpStatus);
   if((lastStateChangeHeather + RELAY_DEBOUNCE_SECS) < now.unixtime() && digitalRead(heatherPin) != heatherStatus){
     digitalWrite(heatherPin, heatherStatus);
@@ -128,6 +135,10 @@ void updateDateIfRequired() {
 
 void setLightStatus() {
   lightStatus = now.hour() >= 16;
+}
+
+void setFanStatus() {
+    fanStatus = tempAqua > FORCED_AQUA_COOLING_TEMP;
 }
 
 void setHeatherStatus() {
@@ -174,6 +185,9 @@ void printRelayStatus() {
   (heatherStatus)? oled.putString("ON   "):oled.putString("OFF  ");
   (lightStatus)? oled.putString("ON   "):oled.putString("OFF  ");
   (pumpStatus)? oled.putString("ON   "):oled.putString("OFF  ");
+  oled.setTextXY(6,3);              // Set cursor position, start of line 0
+  oled.putString("FAN ");
+  (fanStatus)? oled.putString("ON   "):oled.putString("OFF  ");
 }
 
 
