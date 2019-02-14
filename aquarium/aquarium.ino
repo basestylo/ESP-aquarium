@@ -2,7 +2,7 @@
 #include <ACROBOTIC_SSD1306.h>
 #include <DNSServer.h>
 #include <ESP8266WebServer.h>
-#include <WiFiManager.h> 
+#include <WiFiManager.h>
 #include <ESP8266WiFi.h>
 #include <ESP8266mDNS.h>
 #include <WiFiUdp.h>
@@ -12,12 +12,23 @@
 #include <DallasTemperature.h>
 #include <RTClib.h>
 
+#include <ESP8266WiFi.h>
+#include "Adafruit_MQTT.h"
+#include "Adafruit_MQTT_Client.h"
+
+#include <TaskScheduler.h>
+
 #define ONE_WIRE_BUS D1
-#define TEMPERATURE_PRECISION 12 
+#define TEMPERATURE_PRECISION 12
 #define TZ 0
 #define MAX_AQUA_TEMP 22
 #define FORCED_AQUA_COOLING_TEMP 24
 #define RELAY_DEBOUNCE_SECS 300
+
+#define AIO_SERVER      "mqtt.senseapp.space"
+#define AIO_SERVERPORT  1883                   // 8883 for MQTTS
+#define AIO_USERNAME    "*******"
+#define AIO_KEY         "*******"
 
 RTC_Millis RTC;                           // RTC (soft)
 DateTime now;                             // current time
@@ -28,14 +39,23 @@ const int NTP_PACKET_SIZE = 48;
 byte packetBuffer[ NTP_PACKET_SIZE];
 WiFiUDP udp;
 
+WiFiClient client;
+Adafruit_MQTT_Client mqtt(&client, AIO_SERVER, AIO_SERVERPORT, AIO_USERNAME, AIO_KEY);
+Adafruit_MQTT_Publish water_temp = Adafruit_MQTT_Publish(&mqtt, AIO_USERNAME "/aquarium/metric/water-temp");
+Adafruit_MQTT_Publish air_temp = Adafruit_MQTT_Publish(&mqtt, AIO_USERNAME "/aquarium/metric/air-temp");
+
 OneWire oneWire(ONE_WIRE_BUS);
 DallasTemperature sensors(&oneWire);
 DeviceAddress aquaTempDevice  = { 0x28, 0xFF, 0x45, 0xBC, 0xB5, 0x16, 0x03, 0xDD };
 DeviceAddress boardTempDevice = { 0x28, 0xFF, 0x91, 0x51, 0xC1, 0x16, 0x04, 0xBA };
 float tempAqua = 0;
 int lastStateChangeHeather = 0;
+int lastStateChangePump = 0;
+int lastStateChangeFan = 0;
+int lastStateChangeLight = 0;
+
 float tempBoard = 0;
- 
+
 const int ledStatusPin = D8;
 const int lightPin = D0;
 const int pumpPin = D5;
@@ -47,12 +67,40 @@ boolean heatherStatus = true;
 boolean fanStatus = true;
 boolean ledStatus = true;
 
-void setup()
-{ 
+void updateDeviceStates(){
+  setRelayStates();
+  setLightStatus();
+  setHeatherStatus();
+  setFanStatus();
+  printRelayStatus();
+}
+
+void updateTemperatures(){
+  obtainTemperature();
+  printTemperature();
+}
+void sendDataByMqtt(){
+  water_temp.publish(tempAqua);
+  air_temp.publish(tempBoard);
+}
+
+void updateDate(){
+  now = RTC.now();
+  printDate();
+}
+
+Task tUpdateDeviceStates(10000, TASK_FOREVER, &updateDeviceStates);
+Task tSendDataByMqtt(10000, TASK_FOREVER, &sendDataByMqtt);
+Task tUpdateTemperatures(5000, TASK_FOREVER, &updateTemperatures);
+Task tUpdateDate(1000, TASK_FOREVER, &updateDate);
+
+Scheduler runner;
+
+void setup(){
   //Serial port
   Serial.begin(57600);
   Serial.println("Starting");
-  
+
  //OLED
   Wire.begin(D2, D3);
   oled.init();                      // Initialze SSD1306 OLED display
@@ -63,13 +111,13 @@ void setup()
   //WIFI
   WiFiManager wifiManager;
   wifiManager.setTimeout(180);
-  
+
   if (!wifiManager.autoConnect("ESP-aquarium")) {
     Serial.println("failed to connect, we should reset as see if it connects");
     delay(3000);
     ESP.reset();
   }
- 
+
   //NTP
   RTC.begin(DateTime(F(__DATE__), F(__TIME__)));    // initially set to compile date & time
   udp.begin(localPort);
@@ -92,33 +140,73 @@ void setup()
 
   obtainTemperature();
   setRelayStates();
-  
+
   //Start routine
   obtainDate();
   oled.setTextXY(2,0);              // Set cursor position, start of line 0
   oled.putString("Starting......");
+  printWifiInfo();
+
+  runner.init();
+  runner.addTask(tUpdateDate);
+  runner.addTask(tSendDataByMqtt);
+  runner.addTask(tUpdateDeviceStates);
+  runner.addTask(tUpdateTemperatures);
+  tUpdateDate.enable();
+  tSendDataByMqtt.enable();
+  tUpdateDeviceStates.enable();
+  tUpdateTemperatures.enable();
 }
 
-void loop() {    
+void loop() {
   ArduinoOTA.handle();
-  now = RTC.now();
+  MQTT_connect();
 
-  obtainTemperature();
-  printTemperature();
-  printWifiInfo();
-  printDate();
-  setLightStatus();
-  setHeatherStatus();
-  setFanStatus();
-  printRelayStatus();
-  setRelayStates();
+  runner.execute();
+
   updateDateIfRequired();
 }
 
+void MQTT_connect() {
+  int8_t ret;
+
+  // Stop if already connected.
+  if (mqtt.connected()) {
+    return;
+  }
+
+  Serial.print("Connecting to MQTT... ");
+
+  uint8_t retries = 3;
+  while ((ret = mqtt.connect()) != 0) { // connect will return 0 for connected
+      Serial.println(mqtt.connectErrorString(ret));
+      Serial.println("Retrying MQTT connection in 5 seconds...");
+      mqtt.disconnect();
+      delay(5000);  // wait 5 seconds
+      retries--;
+      if (retries == 0) {
+        oled.setTextXY(2,0);              // Set cursor position, start of line 0
+        oled.putString("ERROR!!!!");
+        // basically die and wait for WDT to reset me
+        while (1);
+       }
+  }
+  Serial.println("MQTT Connected!");
+}
+
 void setRelayStates() {
-  digitalWrite(lightPin, lightStatus);
-  digitalWrite(fanPin, !fanStatus);
-  digitalWrite(pumpPin, pumpStatus);
+  if((lastStateChangeLight + RELAY_DEBOUNCE_SECS) < now.unixtime() && digitalRead(lightPin) != lightStatus){
+    digitalWrite(lightPin, lightStatus);
+    lastStateChangeLight = now.unixtime();
+  }
+  if((lastStateChangeFan + RELAY_DEBOUNCE_SECS) < now.unixtime() && digitalRead(fanPin) != !fanStatus){
+    digitalWrite(fanPin, !fanStatus);
+    lastStateChangeFan = now.unixtime();
+  }
+  if((lastStateChangePump + RELAY_DEBOUNCE_SECS) < now.unixtime() && digitalRead(pumpPin) != pumpStatus){
+    digitalWrite(pumpPin, pumpStatus);
+    lastStateChangePump = now.unixtime();
+  }
   if((lastStateChangeHeather + RELAY_DEBOUNCE_SECS) < now.unixtime() && digitalRead(heatherPin) != heatherStatus){
     digitalWrite(heatherPin, heatherStatus);
     lastStateChangeHeather = now.unixtime();
@@ -201,7 +289,7 @@ void obtainTemperature() {
 boolean IsDST(int mo, int dy, int dw) {
   if (mo < 3 || mo > 11) { return false; }                // January, February, and December are out.
   if (mo > 3 && mo < 11) { return true;  }                // April to October are in
-  int previousSunday = dy - dw;                               
+  int previousSunday = dy - dw;
   if (mo == 3) { return previousSunday >= 8; }            // In March, we are DST if our previous Sunday was on or after the 8th.
   return previousSunday <= 0;                             // In November we must be before the first Sunday to be DST. That means the previous Sunday must be before the 1st.
 }
@@ -216,12 +304,12 @@ void obtainDate() {
     //get a random server from the pool
   oled.setTextXY(6,0);              // Set cursor position, start of line 0
   oled.putString("Updating date.");
-  WiFi.hostByName(ntpServerName, timeServerIP); 
+  WiFi.hostByName(ntpServerName, timeServerIP);
 
   sendNTPpacket(timeServerIP); // send an NTP packet to a time server
   // wait to see if a reply is available
   delay(10000);
-  
+
   int cb = udp.parsePacket();
   int counter = 0;
   while (!cb) {
@@ -269,7 +357,7 @@ void obtainDate() {
     RTC.adjust(ntime);
 
     now = RTC.now();
-    
+
     Serial.print(now.year(), DEC);
     Serial.print('/');
     Serial.print(now.month(), DEC);
@@ -282,7 +370,7 @@ void obtainDate() {
     Serial.print(':');
     Serial.print(now.second(), DEC);
     Serial.println();
-    
+
     oled.setTextXY(6,0);              // Set cursor position, start of line 0
     oled.putString("                ");
 }
@@ -294,7 +382,7 @@ void printDate() {
   oled.putNumber(now.month());
   oled.putString("/");
   oled.putNumber(now.year());
-  
+
   oled.setTextXY(7,11);              // Set cursor position, start of line 0
   if(now.hour() < 10){
     oled.putString("0");
@@ -307,4 +395,3 @@ void printDate() {
   oled.putNumber(now.minute());
   oled.putString("  ");
 }
-
